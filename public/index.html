@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Bot Hosting</title>
+<style>
+body { font-family: Arial; text-align:center; background:#111; color:#fff; }
+button { padding:10px; margin:10px; }
+</style>
+</head>
+<body>
+
+<h2>🤖 Bot Hosting Panel</h2>
+
+<input type="file" id="file"><br><br>
+
+<button onclick="upload()">Upload Bot</button>
+<button onclick="start()">Start Bot</button>
+<button onclick="stop()">Stop Bot</button>
+
+<p id="status"></p>
+
+<script>
+let filename = "";
+
+function upload(){
+    let file = document.getElementById("file").files[0];
+    let data = new FormData();
+    data.append("bot", file);
+
+    fetch("/upload", { method:"POST", body:data })
+    .then(res=>res.text())
+    .then(t=>{
+        document.getElementById("status").innerText = t;
+        filename = t.split(": ")[1];
+    });
+}
+
+function start(){
+    fetch("/start/" + filename)
+    .then(res=>res.text())
+    .then(t=>document.getElementById("status").innerText = t);
+}
+
+function stop(){
+    fetch("/stop")
+    .then(res=>res.text())
+    .then(t=>document.getElementById("status").innerText = t);
+}
+</script>
+
+</body>
+</html>
