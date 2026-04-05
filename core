@@ -1,1 +1,224 @@
 
+#!/usr/bin/env python3
+# encoding: UTF-8
+
+"""
+    IPGeoLocation - Retrieve IP Geolocation information 
+    Powered by http://ip-api.com
+    Copyright (C) 2015-2016 @maldevel
+"""
+
+import json
+import os
+import socket
+import ipaddress
+import urllib.request
+import urllib.parse
+import webbrowser
+import argparse
+import csv
+import random
+from datetime import datetime
+from xml.etree import ElementTree as etree
+from collections import OrderedDict
+from termcolor import colored
+from sys import platform as _platform
+
+# Windows အတွက် အရောင်စနစ်ပြင်ဆင်ခြင်း
+if _platform == 'win32':
+    import colorama
+    colorama.init()
+
+# --- ၁။ Custom Exceptions (အမှားအယွင်းများ) ---
+class InvalidTargetError(Exception): pass
+class ProxyServerNotReachableError(Exception): pass
+
+# --- ၂။ Logger & Colors (အရောင်နှင့် မှတ်တမ်း) ---
+def Red(value): return colored(value, 'red', attrs=['bold'])
+def Green(value): return colored(value, 'green', attrs=['bold'])
+def Yellow(value): return colored(value, 'yellow', attrs=['bold'])
+
+class Logger:
+    def __init__(self, nolog=False, verbose=False):
+        self.NoLog = nolog
+        self.Verbose = verbose
+        if not nolog and not os.path.exists('./logs'):
+            os.makedirs('./logs')
+
+    def WriteLog(self, messagetype, message):
+        if self.NoLog: return
+        filename = f'{datetime.now().strftime("%Y%m%d")}.log'
+        path = os.path.join('./logs', filename)
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(f'[{messagetype}] {datetime.now()} - {message}\n')
+
+    def PrintError(self, message):
+        self.WriteLog('ERROR', message)
+        print(f"[{Red('ERROR')}] {message}")
+
+    def Print(self, message):
+        self.WriteLog('INFO', message)
+        if self.Verbose: print(f"[{Green('*')}] {message}")
+
+    def PrintIPGeoLocation(self, obj):
+        print(f"\n{Green('[+] Target Details: ')}{obj.Query}")
+        print(f"    IP Address    : {obj.IP}")
+        print(f"    ASN           : {obj.ASN}")
+        print(f"    City          : {obj.City}")
+        print(f"    Country       : {obj.Country}")
+        print(f"    ISP           : {obj.ISP}")
+        print(f"    Location      : {obj.Latitude}, {obj.Longitude}")
+        print(f"    Google Maps   : {obj.GoogleMapsLink}")
+        print("-" * 50)
+
+# --- ၃။ Data Class (အချက်အလက်သိမ်းဆည်းရန်) ---
+class IpGeoLocation:
+    def __init__(self, query, jsonData):
+        self.Query = query
+        self.IP = jsonData.get('query', '-')
+        self.ASN = jsonData.get('as', '-')
+        self.City = jsonData.get('city', '-')
+        self.Country = jsonData.get('country', '-')
+        self.CountryCode = jsonData.get('countryCode', '-')
+        self.ISP = jsonData.get('isp', '-')
+        self.Latitude = jsonData.get('lat', 0.0)
+        self.Longitude = jsonData.get('lon', 0.0)
+        self.Organization = jsonData.get('org', '-')
+        self.RegionName = jsonData.get('regionName', '-')
+        self.Timezone = jsonData.get('timezone', '-')
+        self.Zip = jsonData.get('zip', '-')
+        self.GoogleMapsLink = f"https://www.google.com/maps/place/{self.Latitude},{self.Longitude}/@{self.Latitude},{self.Longitude},16z"
+
+    def ToDict(self):
+        return OrderedDict([
+            ('Target', self.Query), ('IP', self.IP), ('ASN', self.ASN),
+            ('City', self.City), ('Country', self.Country), ('ISP', self.ISP),
+            ('Latitude', str(self.Latitude)), ('Longitude', str(self.Longitude)),
+            ('Organization', self.Organization), ('Region', self.RegionName),
+            ('Timezone', self.Timezone), ('Zip', self.Zip), ('GoogleMaps', self.GoogleMapsLink)
+        ])
+
+# --- ၄။ File Exporter (ဖိုင်အဖြစ်သိမ်းဆည်းရန်) ---
+class FileExporter:
+    def ExportToCSV(self, obj, filename):
+        try:
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerow(['Field', 'Value'])
+                for k, v in obj.ToDict().items():
+                    writer.writerow([k, v])
+            return True
+        except: return False
+
+    def ExportToJSON(self, obj, filename):
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(obj.ToDict(), f, indent=4)
+            return True
+        except: return False
+
+    def ExportToTXT(self, obj, filename):
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write("--- IP GEOLOCATION REPORT ---\n\n")
+                for k, v in obj.ToDict().items():
+                    f.write(f"{k}: {v}\n")
+            return True
+        except: return False
+
+# --- ၅။ Utils (အကူအညီပေးမည့် လုပ်ဆောင်ချက်များ) ---
+class Utils:
+    def __init__(self, logger):
+        self.Logger = logger
+
+    def isValidIP(self, ip):
+        try:
+            ipaddress.ip_address(ip)
+            return True
+        except: return False
+
+    def hostnameToIP(self, hostname):
+        try: return socket.gethostbyname(hostname)
+        except: return False
+
+# --- ၆။ Core Logic (အဓိကအလုပ်လုပ်ပုံ) ---
+class IpGeoLocationLib:
+    def __init__(self, logger):
+        self.Logger = logger
+        self.Utils = Utils(logger)
+        self.Exporter = FileExporter()
+
+    def GetInfo(self, target, args):
+        query_ip = target
+        if target and not self.Utils.isValidIP(target):
+            self.Logger.Print(f"Resolving DNS for {target}...")
+            query_ip = self.Utils.hostnameToIP(target)
+            if not query_ip:
+                self.Logger.PrintError(f"Could not resolve {target}")
+                return
+
+        api_url = f"http://ip-api.com/json/{query_ip}"
+        headers = {'User-Agent': args.user_agent or 'IPGeoLocation/2.0'}
+
+        try:
+            self.Logger.Print(f"Retrieving Geolocation for {query_ip if query_ip else 'Your IP'}...")
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+
+            if data['status'] == 'success':
+                obj = IpGeoLocation(target if target else "MyIP", data)
+                self.Logger.PrintIPGeoLocation(obj)
+
+                # Export files
+                if args.txt: 
+                    if self.Exporter.ExportToTXT(obj, args.txt): self.Logger.Print(f"TXT report saved to {args.txt}")
+                if args.csv:
+                    if self.Exporter.ExportToCSV(obj, args.csv): self.Logger.Print(f"CSV report saved to {args.csv}")
+                if args.json:
+                    if self.Exporter.ExportToJSON(obj, args.json): self.Logger.Print(f"JSON report saved to {args.json}")
+
+                # Open Map
+                if args.g:
+                    self.Logger.Print("Opening Google Maps in browser...")
+                    webbrowser.open(obj.GoogleMapsLink)
+            else:
+                self.Logger.PrintError(f"API Error: {data['message']}")
+
+        except Exception as e:
+            self.Logger.PrintError(f"Request failed: {str(e)}")
+
+# --- ၇။ Main Program Interface ---
+def main():
+    banner = f"""
+    {Red('IPGeolocation Tool v2.0')}
+    {Yellow('Powered by ip-api.com | Built by @maldevel')}
+    """
+    print(banner)
+
+    parser = argparse.ArgumentParser(description="IP Geolocation Information Tool")
+    parser.add_argument('-t', '--target', help='Target IP Address or Domain (e.g. 8.8.8.8 or google.com)')
+    parser.add_argument('-m', '--my-ip', action='store_true', help='Get Geolocation for your current IP')
+    parser.add_argument('-g', action='store_true', help='Open location in Google Maps')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
+    parser.add_argument('--user-agent', help='Set custom User-Agent string')
+    parser.add_argument('--nolog', action='store_true', help='Disable log saving')
+
+    # Export arguments
+    parser.add_argument('--txt', metavar='file', help='Export result to TXT file')
+    parser.add_argument('--csv', metavar='file', help='Export result to CSV file')
+    parser.add_argument('--json', metavar='file', help='Export result to JSON file')
+
+    args = parser.parse_args()
+    logger = Logger(nolog=args.nolog, verbose=args.verbose)
+    tool = IpGeoLocationLib(logger)
+
+    if args.my_ip:
+        tool.GetInfo("", args)
+    elif args.target:
+        tool.GetInfo(args.target, args)
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()
